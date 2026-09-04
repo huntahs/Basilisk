@@ -1,0 +1,22 @@
+{
+  "name": "basilisk",
+  "version": "0.1.0",
+  "description": "Basilisk - the UAB Esports Discord bot. Stat tracking, tournament data, patch notes, and server utilities.",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "deploy": "node src/deploy-commands.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "better-sqlite3": "^11.3.0",
+    "node-fetch": "^2.7.0"
+  },
+  "license": "MIT"
+}
