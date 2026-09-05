@@ -567,10 +567,6 @@ async function handleSmashLookup(interaction, username) {
       footer: 'Data via start.gg',
     });
 
-    if (data.avatarUrl) {
-      embed.setThumbnail(data.avatarUrl);
-    }
-
     if (data.ranking) {
       embed.addFields({
         name: '🏅 start.gg Ranking',
@@ -606,7 +602,7 @@ async function handleSmashLookup(interaction, username) {
       });
 
       if (top.iconUrl) {
-        embed.setImage(top.iconUrl);
+        embed.setThumbnail(top.iconUrl);
       }
 
       const characterLines = data.topCharacters.map(

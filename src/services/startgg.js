@@ -77,9 +77,20 @@ function isDQ(set) {
  * Finds which slot in a set belongs to the player we're looking up, by
  * matching gamerTag against slot.entrant.name. This is what makes win/loss
  * and character attribution reliable instead of guessed.
+ *
+ * IMPORTANT: entrant.name isn't always just the bare gamerTag - when a
+ * player has a team/sponsor prefix set, start.gg often reports the entrant
+ * name as "Prefix | GamerTag" instead (confirmed via real data: a player
+ * with prefix "ML" showed up as "ML | KoolK" on recent sets, but as just
+ * "KoolK" on older ones). An exact-match-only check silently fails on every
+ * prefixed set, so we also accept a "| gamerTag" suffix match.
  */
 function findMySlot(set, normalizedGamerTag) {
-  return set.slots?.find((slot) => slot.entrant?.name?.toLowerCase() === normalizedGamerTag);
+  return set.slots?.find((slot) => {
+    const name = slot.entrant?.name?.toLowerCase();
+    if (!name) return false;
+    return name === normalizedGamerTag || name.endsWith(`| ${normalizedGamerTag}`);
+  });
 }
 
 /**
@@ -214,7 +225,9 @@ function computeCharacterStats(sets, gamerTag, topN = 3) {
     for (const game of set.games || []) {
       const mySelection = game.selections?.find((sel) => sel.entrant?.id === myEntrantId);
       const charName = mySelection?.character?.name;
-      if (!charName) continue;
+      // "Random Character" is a placeholder some tournament software reports
+      // when it isn't actually tracking character selections - not a real pick.
+      if (!charName || charName === 'Random Character') continue;
 
       if (!characterStats[charName]) {
         const iconImage = mySelection.character.images?.find((img) => img.type === 'icon');
