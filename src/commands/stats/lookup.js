@@ -6,6 +6,7 @@ const { getPlayerStats, findPlaylist, RocketLeagueApiError, PLAYLIST_IDS } = req
 const { buildChartUrl } = require('../../services/quickchart');
 const { getAccount, getMMR, getRecentCompetitiveMatches, analyzeCompetitiveMatches, HenrikApiError } = require('../../services/henrikValorant');
 const { getAgentRoleMap } = require('../../services/valorantContent');
+const { getPlayerSummary, getPlayerStatsSummary, getHeroRoleMap, pickDominantPlatform, groupHeroesByRole, findMostPlayedRole, formatPlaytime, ROLE_KEYS, OverfastApiError } = require('../../services/overfast');
 
 const QUEUE_LABELS = {
   RANKED_SOLO_5x5: 'Ranked Solo/Duo',
@@ -54,6 +55,17 @@ function formatWinRate(entry) {
   const total = entry.wins + entry.losses;
   if (total === 0) return 'N/A';
   return `${Math.round((entry.wins / total) * 100)}% (${entry.wins}W ${entry.losses}L)`;
+}
+
+// HenrikDev returns Valorant season codes like "e10a6" (Episode 10, Act 6)
+// instead of a human-readable name. Decode it if it matches that pattern,
+// otherwise just show whatever raw value came back rather than guessing.
+function formatValorantSeason(code) {
+  if (!code) return 'unknown act';
+  const match = code.match(/^e(\d+)a(\d+)$/i);
+  if (!match) return code;
+  const [, episode, act] = match;
+  return `Episode ${episode}, Act ${act}`;
 }
 
 /**
@@ -321,7 +333,7 @@ async function handleValorantLookup(interaction, username) {
       if (mmr.highest_rank?.patched_tier) {
         embed.addFields({
           name: '⭐ Peak Rank',
-          value: `${mmr.highest_rank.patched_tier} (${mmr.highest_rank.season || 'unknown act'})`,
+          value: `${mmr.highest_rank.patched_tier} (${formatValorantSeason(mmr.highest_rank.season)})`,
           inline: true,
         });
       }
@@ -344,7 +356,12 @@ async function handleValorantLookup(interaction, username) {
         });
       } else {
         embed.addFields({
-          name: `📈 Win/Loss (last ${analysis.gamesAnalyzed} competitive games)`,
+          name: '📊 Recent Match Stats',
+          value: `*Everything below (K/D, agents, roles, weapons, maps) is based on your last **${analysis.gamesAnalyzed}** competitive games only - not your full history.*`,
+        });
+
+        embed.addFields({
+          name: '📈 Win/Loss',
           value: `${analysis.winRatePct}% win rate (${analysis.wins}W ${analysis.losses}L)`,
         });
 
@@ -416,6 +433,115 @@ async function handleValorantLookup(interaction, username) {
 }
 
 /**
+ * Overwatch 2 lookup - real data via the OverFast API.
+ * `username` is expected as a BattleTag with # replaced by - (e.g. Name-1234),
+ * matching this API's own identifier convention.
+ *
+ * Automatically picks whichever platform (PC or console) the player has
+ * more competitive games on, and uses that platform's rank + stats
+ * throughout the whole embed.
+ *
+ * NOTE: this API only exposes lifetime/season-aggregate stats, not a
+ * "last N games" rolling window (same limitation as Rocket League) - the
+ * embed is upfront about that rather than implying otherwise.
+ */
+const OW_ROLE_DISPLAY_NAMES = { tank: 'Tank', damage: 'DPS', support: 'Support' };
+
+async function handleOverwatchLookup(interaction, username) {
+  try {
+    const summary = await getPlayerSummary(username);
+
+    const embed = baseEmbed({
+      title: `Overwatch 2 — ${summary.username}`,
+      footer: 'Data via OverFast API • All stats are lifetime/season totals, not a recent-games sample',
+    });
+
+    if (summary.avatar) {
+      embed.setThumbnail(summary.avatar);
+    }
+
+    // --- Fetch both platforms' stats in parallel, pick the dominant one ---
+    let dominantPlatform = 'pc';
+    let stats = null;
+    let heroRoleMap = null;
+
+    try {
+      const [pcStats, consoleStats, roleMap] = await Promise.all([
+        getPlayerStatsSummary(username, { platform: 'pc' }).catch(() => null),
+        getPlayerStatsSummary(username, { platform: 'console' }).catch(() => null),
+        getHeroRoleMap(),
+      ]);
+      dominantPlatform = pickDominantPlatform(pcStats, consoleStats);
+      stats = dominantPlatform === 'console' ? consoleStats : pcStats;
+      heroRoleMap = roleMap;
+    } catch (statsError) {
+      console.error('Error fetching Overwatch stats summary:', statsError);
+    }
+
+    embed.setDescription(`Platform: **${dominantPlatform === 'console' ? 'Console' : 'PC'}** (more competitive games played here)`);
+
+    // --- Rank + WR + KDA per role ---
+    const ranks = summary.competitive?.[dominantPlatform];
+    for (const roleKey of ROLE_KEYS) {
+      const rank = ranks?.[roleKey];
+      const roleStats = stats?.roles?.[roleKey];
+      const displayName = OW_ROLE_DISPLAY_NAMES[roleKey];
+
+      if (!rank && !roleStats) continue; // never played this role at all
+
+      const rankLine = rank
+        ? `${rank.division.charAt(0).toUpperCase() + rank.division.slice(1)} ${rank.tier}`
+        : 'Unranked';
+      const wrLine = roleStats ? `${Math.round(roleStats.winrate)}%` : 'N/A';
+      const kdaLine = roleStats ? `${roleStats.kda}` : 'N/A';
+
+      embed.addFields({
+        name: `🏆 ${displayName} Rank`,
+        value: `${rankLine}\nWR: ${wrLine} • KDA: ${kdaLine}`,
+        inline: true,
+      });
+    }
+
+    // --- Most played role ---
+    const mostPlayedRole = findMostPlayedRole(stats?.roles);
+    if (mostPlayedRole) {
+      embed.addFields({
+        name: '🎯 Role Most Played',
+        value: OW_ROLE_DISPLAY_NAMES[mostPlayedRole],
+      });
+    }
+
+    // --- Top 2 heroes per role ---
+    if (stats?.heroes && heroRoleMap) {
+      const grouped = groupHeroesByRole(stats.heroes, heroRoleMap, 2);
+      for (const roleKey of ROLE_KEYS) {
+        const heroes = grouped[roleKey];
+        if (!heroes || heroes.length === 0) continue;
+
+        const lines = heroes.map((h) => {
+          const heroName = h.name.charAt(0).toUpperCase() + h.name.slice(1);
+          return `**${heroName}** — ${h.winRate}% WR • ${formatPlaytime(h.timePlayed)} played`;
+        });
+
+        embed.addFields({
+          name: `⚔️ Top ${OW_ROLE_DISPLAY_NAMES[roleKey]} Heroes`,
+          value: lines.join('\n'),
+          inline: true,
+        });
+      }
+    }
+
+    await interaction.editReply({ embeds: [embed] });
+  } catch (error) {
+    if (error instanceof OverfastApiError) {
+      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
  * Placeholder for games without a working data source yet.
  */
 async function handleNotYetSupported(interaction, gameKey, username) {
@@ -428,6 +554,7 @@ async function handleNotYetSupported(interaction, gameKey, username) {
 
   await interaction.editReply({ embeds: [embed] });
 }
+
 
 const REGION_CHOICES = [
   { name: 'North America', value: 'na' },
@@ -487,7 +614,10 @@ module.exports = {
         .setName('overwatch')
         .setDescription("Look up a player's Overwatch 2 stats.")
         .addStringOption((option) =>
-          option.setName('username').setDescription('Player username').setRequired(true)
+          option
+            .setName('username')
+            .setDescription('BattleTag with # replaced by - (e.g. Name-1234)')
+            .setRequired(true)
         )
     )
     .addSubcommand((sub) =>
@@ -522,6 +652,9 @@ module.exports = {
         break;
       case 'rocketleague':
         await handleRocketLeagueLookup(interaction, username, interaction.options.getString('platform') || 'epic');
+        break;
+      case 'overwatch':
+        await handleOverwatchLookup(interaction, username);
         break;
       default:
         await handleNotYetSupported(interaction, gameKey, username);
