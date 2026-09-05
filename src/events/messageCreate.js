@@ -35,10 +35,22 @@ module.exports = {
     }
 
     try {
-      const originalPostUrl = `https://discord.com/channels/${message.guild.id}/${round.channelId}/${round.messageId}`;
-      await message.channel.send(`✅ <@${authorId}> got it right! [View the original post](${originalPostUrl})`);
+      // A genuine Discord reply (not just a text link) - this shows the
+      // native quote-reference UI and lets people click it to jump straight
+      // to the original silhouette post.
+      await message.channel.send({
+        content: `✅ <@${authorId}> got it right!`,
+        reply: { messageReference: round.messageId },
+      });
     } catch (error) {
-      console.error('Error sending Pokemon credit message:', error);
+      // Most likely the original post is no longer reachable (e.g. deleted).
+      // Fall back to a plain message so credit still gets announced.
+      console.error('Error replying to original Pokemon post, falling back to plain message:', error);
+      try {
+        await message.channel.send(`✅ <@${authorId}> got it right!`);
+      } catch (fallbackError) {
+        console.error('Error sending Pokemon credit fallback message:', fallbackError);
+      }
     }
   },
 };
