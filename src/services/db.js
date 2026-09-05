@@ -12,14 +12,27 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { getPreviousDateStr } = require('./dateUtils');
 
 const dataDir = path.join(__dirname, '..', '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 const dataFile = path.join(dataDir, 'basilisk.json');
 
+const EMPTY_DATA = {
+  voiceHubs: [],
+  tempChannels: [],
+  pokemonChannels: [],
+  pokemonRounds: [],
+  instagramConfigs: [],
+  botStatus: null,
+  workoutRecords: [],
+  workoutLogs: [],
+  workoutConfigs: [],
+};
+
 function loadData() {
   if (!fs.existsSync(dataFile)) {
-    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [], instagramConfigs: [], botStatus: null };
+    return { ...EMPTY_DATA };
   }
   try {
     const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
@@ -28,10 +41,13 @@ function loadData() {
     if (!data.pokemonRounds) data.pokemonRounds = [];
     if (!data.instagramConfigs) data.instagramConfigs = [];
     if (data.botStatus === undefined) data.botStatus = null;
+    if (!data.workoutRecords) data.workoutRecords = [];
+    if (!data.workoutLogs) data.workoutLogs = [];
+    if (!data.workoutConfigs) data.workoutConfigs = [];
     return data;
   } catch (error) {
     console.error('Error reading basilisk.json, starting fresh:', error);
-    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [], instagramConfigs: [], botStatus: null };
+    return { ...EMPTY_DATA };
   }
 }
 
@@ -222,6 +238,117 @@ function clearTemporaryBotStatus() {
   saveData(data);
 }
 
+// --- Workout PR records (squat/bench/deadlift with video proof) ---
+
+const KG_TO_LBS = 2.20462;
+function toLbsValue(record) {
+  return record.unit === 'kg' ? record.weight * KG_TO_LBS : record.weight;
+}
+
+function addWorkoutRecord(guildId, { messageId, channelId, userId, lift, weight, unit }) {
+  const data = loadData();
+  data.workoutRecords.push({
+    messageId,
+    channelId,
+    guildId,
+    userId,
+    lift,
+    weight,
+    unit,
+    submittedAt: Date.now(),
+  });
+  saveData(data);
+}
+
+/**
+ * Returns true if something was actually removed (so callers - both the
+ * manual /workout nix command and the automatic message-delete cleanup -
+ * can tell whether the message ID actually corresponded to a real record).
+ */
+function removeWorkoutRecordByMessageId(messageId) {
+  const data = loadData();
+  const before = data.workoutRecords.length;
+  data.workoutRecords = data.workoutRecords.filter((r) => r.messageId !== messageId);
+  saveData(data);
+  return data.workoutRecords.length < before;
+}
+
+function isTrackedWorkoutMessage(messageId) {
+  const data = loadData();
+  return data.workoutRecords.some((r) => r.messageId === messageId);
+}
+
+/**
+ * Returns each user's personal best for the given lift, sorted heaviest
+ * first (converted to lbs for fair comparison across mixed-unit
+ * submissions, though the DISPLAYED value stays in whatever unit the user
+ * originally submitted).
+ */
+function getWorkoutLeaderboard(guildId, lift) {
+  const data = loadData();
+  const records = data.workoutRecords.filter((r) => r.guildId === guildId && r.lift === lift);
+
+  const bestByUser = {};
+  for (const record of records) {
+    const existing = bestByUser[record.userId];
+    if (!existing || toLbsValue(record) > toLbsValue(existing)) {
+      bestByUser[record.userId] = record;
+    }
+  }
+
+  return Object.values(bestByUser).sort((a, b) => toLbsValue(b) - toLbsValue(a));
+}
+
+// --- Daily workout logging (no proof, one per day, streak-tracked) ---
+
+function logWorkout(guildId, userId, dateStr) {
+  const data = loadData();
+  let log = data.workoutLogs.find((l) => l.guildId === guildId && l.userId === userId);
+
+  if (!log) {
+    log = { guildId, userId, lastLoggedDate: dateStr, currentStreak: 1 };
+    data.workoutLogs.push(log);
+    saveData(data);
+    return { streak: 1, alreadyLoggedToday: false };
+  }
+
+  if (log.lastLoggedDate === dateStr) {
+    return { streak: log.currentStreak, alreadyLoggedToday: true };
+  }
+
+  const yesterday = getPreviousDateStr(dateStr);
+  log.currentStreak = log.lastLoggedDate === yesterday ? log.currentStreak + 1 : 1;
+  log.lastLoggedDate = dateStr;
+  saveData(data);
+  return { streak: log.currentStreak, alreadyLoggedToday: false };
+}
+
+function getWorkoutLogsForDate(guildId, dateStr) {
+  const data = loadData();
+  return data.workoutLogs.filter((l) => l.guildId === guildId && l.lastLoggedDate === dateStr);
+}
+
+function setWorkoutChannel(guildId, channelId) {
+  const data = loadData();
+  const existing = data.workoutConfigs.find((c) => c.guildId === guildId);
+  if (existing) {
+    existing.channelId = channelId;
+  } else {
+    data.workoutConfigs.push({ guildId, channelId });
+  }
+  saveData(data);
+}
+
+function getWorkoutChannel(guildId) {
+  const data = loadData();
+  return data.workoutConfigs.find((c) => c.guildId === guildId)?.channelId || null;
+}
+
+function getAllWorkoutChannels() {
+  const data = loadData();
+  return data.workoutConfigs;
+}
+
 module.exports = {
   addVoiceHub,
   removeVoiceHub,
@@ -244,4 +371,13 @@ module.exports = {
   setTemporaryBotStatus,
   getTemporaryBotStatus,
   clearTemporaryBotStatus,
+  addWorkoutRecord,
+  removeWorkoutRecordByMessageId,
+  isTrackedWorkoutMessage,
+  getWorkoutLeaderboard,
+  logWorkout,
+  getWorkoutLogsForDate,
+  setWorkoutChannel,
+  getWorkoutChannel,
+  getAllWorkoutChannels,
 };

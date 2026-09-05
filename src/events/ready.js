@@ -2,6 +2,7 @@ const { Events } = require('discord.js');
 const { initPokemonGameJob } = require('../services/pokemonGameJob');
 const { initInstagramJob } = require('../services/instagramJob');
 const { initStatusScheduler } = require('../services/statusScheduler');
+const { initWorkoutJob } = require('../services/workoutJob');
 
 module.exports = {
   name: Events.ClientReady,
@@ -11,5 +12,6 @@ module.exports = {
     initPokemonGameJob(client);
     initInstagramJob(client);
     initStatusScheduler(client);
+    initWorkoutJob(client);
   },
 };
