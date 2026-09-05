@@ -4,6 +4,8 @@ const { getLeagueProfile, analyzeRecentRankedSolo, getTopChampionMastery, RiotAp
 const { getChampionName, getProfileIconUrl } = require('../../services/ddragon');
 const { getPlayerStats, findPlaylist, RocketLeagueApiError, PLAYLIST_IDS } = require('../../services/rocketleague');
 const { buildChartUrl } = require('../../services/quickchart');
+const { getAccount, getMMR, getRecentCompetitiveMatches, analyzeCompetitiveMatches, HenrikApiError } = require('../../services/henrikValorant');
+const { getAgentRoleMap } = require('../../services/valorantContent');
 
 const QUEUE_LABELS = {
   RANKED_SOLO_5x5: 'Ranked Solo/Duo',
@@ -282,29 +284,135 @@ async function handleRocketLeagueLookup(interaction, username, platformKey) {
 }
 
 /**
- * Valorant lookup - still a placeholder. Waiting on a production Riot key
- * with Valorant match/rank access before this pulls real data.
+ * Valorant lookup - real data via HenrikDev's unofficial Valorant API.
+ * `username` is expected in Riot ID format: Name#TAG
  */
 async function handleValorantLookup(interaction, username) {
-  const stats = {
-    name: username,
-    rank: 'Diamond 2',
-    kd: '1.34',
-    winRate: '54%',
-    headshotPct: '27%',
-  };
+  const [name, tag] = username.split('#').map((s) => s?.trim());
+  if (!name || !tag) {
+    await interaction.editReply(
+      'That doesn\'t look like a valid Riot ID. Use the format `Name#TAG` (e.g. `Gyroscopic#Spin`).'
+    );
+    return;
+  }
 
-  const embed = baseEmbed({
-    title: `Valorant — ${stats.name}`,
-    footer: 'Basilisk • Data via Riot Games API (placeholder data for now)',
-  }).addFields(
-    { name: 'Rank', value: stats.rank, inline: true },
-    { name: 'K/D', value: stats.kd, inline: true },
-    { name: 'Win Rate', value: stats.winRate, inline: true },
-    { name: 'Headshot %', value: stats.headshotPct, inline: true },
-  );
+  try {
+    const account = await getAccount(name, tag);
+    const region = account.region;
 
-  await interaction.editReply({ embeds: [embed] });
+    const embed = baseEmbed({
+      title: `Valorant — ${account.name}#${account.tag}`,
+      description: `Region: ${region.toUpperCase()} • Level ${account.account_level}`,
+      footer: 'Data via HenrikDev API',
+    });
+
+    if (account.card?.small) {
+      embed.setThumbnail(account.card.small);
+    }
+
+    // --- Current rating ---
+    try {
+      const mmr = await getMMR(region, name, tag);
+      embed.addFields({
+        name: '🏆 Current Rating',
+        value: `${mmr.current_data?.currenttierpatched || 'Unranked'} (${mmr.current_data?.elo ?? '?'} ELO)`,
+        inline: true,
+      });
+      if (mmr.highest_rank?.patched_tier) {
+        embed.addFields({
+          name: '⭐ Peak Rank',
+          value: `${mmr.highest_rank.patched_tier} (${mmr.highest_rank.season || 'unknown act'})`,
+          inline: true,
+        });
+      }
+      embed.addFields({ name: '\u200b', value: '\u200b', inline: true });
+    } catch (mmrError) {
+      console.error('Error fetching Valorant MMR:', mmrError);
+      embed.addFields({ name: '🏆 Current Rating', value: "Couldn't load right now." });
+    }
+
+    // --- Match analysis: win/loss, K/D, agents, roles, weapons, maps ---
+    try {
+      const matches = await getRecentCompetitiveMatches(region, name, tag);
+      const roleMap = await getAgentRoleMap();
+      const analysis = analyzeCompetitiveMatches(matches, account.puuid, roleMap);
+
+      if (analysis.gamesAnalyzed === 0) {
+        embed.addFields({
+          name: '📊 Recent Competitive Matches',
+          value: 'No recent competitive matches found.',
+        });
+      } else {
+        embed.addFields({
+          name: `📈 Win/Loss (last ${analysis.gamesAnalyzed} competitive games)`,
+          value: `${analysis.winRatePct}% win rate (${analysis.wins}W ${analysis.losses}L)`,
+        });
+
+        embed.addFields({
+          name: '🎯 K/D Ratio',
+          value: analysis.kdRatio === null
+            ? `Perfect (${analysis.totalKills}K / 0D)`
+            : `${analysis.kdRatio} (${analysis.totalKills}K ${analysis.totalDeaths}D ${analysis.totalAssists}A)`,
+        });
+
+        for (const agent of analysis.topAgents) {
+          embed.addFields({
+            name: `⚔️ Most Played: ${agent.name}`,
+            value: `${agent.games} games • ${agent.winRate}% win rate (${agent.wins}W ${agent.losses}L)`,
+            inline: true,
+          });
+        }
+
+        if (analysis.topRoles.length > 0) {
+          embed.addFields({
+            name: '🛡️ Most Played Roles',
+            value: analysis.topRoles.map((r) => `${r.role} (${r.pct}%)`).join('  •  '),
+          });
+        }
+
+        if (analysis.topWeapons.length > 0) {
+          embed.addFields({
+            name: '🔫 Most Used Weapons',
+            value: analysis.topWeapons.map((w) => `${w.name} — ${w.kills} kills`).join('\n'),
+          });
+        }
+
+        if (analysis.mapStats.length > 0) {
+          const mapLines = analysis.mapStats.map(
+            (m) => `**${m.map}**: ${m.winRate}% WR (${m.wins}W ${m.losses}L) • Top agents: ${m.topAgents.join(', ')}`
+          );
+          embed.addFields({
+            name: '🗺️ Map Stats',
+            value: mapLines.join('\n'),
+          });
+        }
+      }
+    } catch (analysisError) {
+      console.error('Error analyzing Valorant matches:', analysisError);
+      embed.addFields({
+        name: '📊 Recent Competitive Matches',
+        value: "Couldn't load right now - try again shortly.",
+      });
+    }
+
+    // Tracker Network profile link - format confirmed from a real profile
+    // URL shared earlier in this project's development.
+    const trackerUrl = `https://tracker.gg/valorant/profile/riot/${encodeURIComponent(name)}%23${encodeURIComponent(tag)}/overview?platform=pc&playlist=competitive`;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🔗 Full Stats on Tracker Network ↗')
+        .setStyle(ButtonStyle.Link)
+        .setURL(trackerUrl)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+  } catch (error) {
+    if (error instanceof HenrikApiError) {
+      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      return;
+    }
+    throw error;
+  }
 }
 
 /**
