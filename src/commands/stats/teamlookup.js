@@ -16,7 +16,7 @@ const {
 const { getSmashTeamSummary } = require('../../services/startgg');
 
 const MAX_PLAYERS = 5;
-const CONDENSED_MATCH_COUNT = 10; // fewer than the full /lookup, to stay well under rate limits
+const CONDENSED_MATCH_COUNT = 5; // reduced further after hitting rate limits even at 10 - Riot's match-detail endpoint seems to have a stricter per-method limit than the general app-wide limits suggest
 
 function parsePlayerList(raw) {
   return raw
@@ -44,7 +44,7 @@ async function runMultiEmbedTeamLookup(interaction, { inputs, lookupFn, buildEmb
   const results = [];
   for (const input of inputs) {
     results.push(await lookupFn(input));
-    await delay(500); // spread requests out across players, same reasoning as League's team lookup
+    await delay(2000); // increased after hitting rate limits even at 500ms - being conservative since we don't have full visibility into Riot's exact per-method limits
   }
 
   if (sortFn) results.sort(sortFn);
@@ -137,7 +137,7 @@ async function handleLeagueTeamLookup(interaction) {
   const results = [];
   for (const riotId of riotIds) {
     results.push(await lookupOneLeaguePlayer(riotId, regionKey));
-    await delay(500); // spread requests out across players - each player alone is fine, but 5 back-to-back without this can trip Riot's rate limit
+    await delay(2000); // increased after hitting rate limits even at 500ms - being conservative since we don't have full visibility into Riot's exact per-method limits
   }
   results.sort((a, b) => laneSortIndex(a.lane) - laneSortIndex(b.lane));
 

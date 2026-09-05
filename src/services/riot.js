@@ -150,9 +150,9 @@ function delay(ms) {
  * per match), spaced out slightly to stay comfortably under Riot's
  * per-second rate limit on personal/dev keys.
  */
-async function analyzeRecentRankedSolo(puuid, regionalRoute) {
+async function analyzeRecentRankedSolo(puuid, regionalRoute, matchCount = MATCH_ANALYSIS_COUNT) {
   const matchIds = await riotFetch(
-    `https://${regionalRoute}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?queue=${RANKED_SOLO_QUEUE_ID}&start=0&count=${MATCH_ANALYSIS_COUNT}`
+    `https://${regionalRoute}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?queue=${RANKED_SOLO_QUEUE_ID}&start=0&count=${matchCount}`
   );
 
   const games = [];
@@ -185,7 +185,7 @@ async function analyzeRecentRankedSolo(puuid, regionalRoute) {
       });
     }
 
-    await delay(60); // small gap between requests to avoid bursting the rate limit
+    await delay(200); // larger gap between requests - Riot's match-detail endpoint appears to have a stricter per-method limit than the general app-wide limits
   }
 
   if (games.length === 0) {
