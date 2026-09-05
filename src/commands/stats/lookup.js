@@ -2,6 +2,8 @@ const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = re
 const { baseEmbed } = require('../../services/embeds');
 const { getLeagueProfile, analyzeRecentRankedSolo, getTopChampionMastery, RiotApiError } = require('../../services/riot');
 const { getChampionName, getProfileIconUrl } = require('../../services/ddragon');
+const { getPlayerStats, findPlaylist, RocketLeagueApiError, PLAYLIST_IDS } = require('../../services/rocketleague');
+const { buildChartUrl } = require('../../services/quickchart');
 
 const QUEUE_LABELS = {
   RANKED_SOLO_5x5: 'Ranked Solo/Duo',
@@ -189,6 +191,97 @@ async function handleLeagueLookup(interaction, username, regionKey) {
 }
 
 /**
+ * Rocket League lookup. Confirmed working via RapidAPI's "rocket-league10"
+ * stats endpoint. NOTE: this API only exposes lifetime career totals for
+ * goals/assists/saves - there's no per-match/recent-games data available,
+ * so the playstyle chart reflects the player's whole career, not a recent
+ * sample (unlike /lookup's League trends, which use a real 20-game window).
+ */
+async function handleRocketLeagueLookup(interaction, username, platformKey) {
+  try {
+    const data = await getPlayerStats(platformKey, username);
+
+    const embed = baseEmbed({
+      title: `Rocket League — ${data.username}`,
+      footer: 'Data via Rocket League Stats API (RapidAPI)',
+    });
+
+    const doubles = findPlaylist(data, PLAYLIST_IDS.DOUBLES_2V2);
+    const standard = findPlaylist(data, PLAYLIST_IDS.STANDARD_3V3);
+
+    function playlistField(label, playlist) {
+      if (!playlist) {
+        return { name: label, value: 'No data for this playlist.', inline: true };
+      }
+      return {
+        name: label,
+        value:
+          `${playlist.tier} ${playlist.division} (${playlist.rating} MMR)\n` +
+          `Peak: ${playlist.peakTier} ${playlist.peakDivision} (${playlist.peakRating})`,
+        inline: true,
+      };
+    }
+
+    embed.addFields(
+      playlistField('🥅 2v2 (Doubles)', doubles),
+      playlistField('🥅 3v3 (Standard)', standard),
+      { name: '\u200b', value: '\u200b', inline: true },
+    );
+
+    if (data.lifetime) {
+      const { goals, assists, saves } = data.lifetime;
+      const total = goals + assists + saves;
+      const pct = (value) => ((value / total) * 100).toFixed(1);
+
+      const chartUrl = buildChartUrl({
+        type: 'pie',
+        data: {
+          labels: [
+            `Goals: ${pct(goals)}%`,
+            `Assists: ${pct(assists)}%`,
+            `Saves: ${pct(saves)}%`,
+          ],
+          datasets: [{
+            data: [goals, assists, saves],
+            backgroundColor: ['#c0392b', '#2980b9', '#27ae60'],
+          }],
+        },
+        options: {
+          plugins: {
+            title: { display: true, text: 'Playstyle - Lifetime Totals' },
+            legend: { position: 'bottom' },
+          },
+        },
+      });
+      embed.setImage(chartUrl);
+
+      embed.addFields({
+        name: '📊 Lifetime Totals',
+        value: `Goals: **${goals.toLocaleString()}** (${pct(goals)}%)  •  Assists: **${assists.toLocaleString()}** (${pct(assists)}%)  •  Saves: **${saves.toLocaleString()}** (${pct(saves)}%)`,
+      });
+    }
+
+    // Best-guess Tracker Network profile URL format - unverified beyond
+    // general convention. Confirm/adjust once tested against a real profile.
+    const trackerUrl = `https://rocketleague.tracker.network/rocket-league/profile/${platformKey}/${encodeURIComponent(username)}/overview`;
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🔗 Full Stats on Tracker Network ↗')
+        .setStyle(ButtonStyle.Link)
+        .setURL(trackerUrl)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+  } catch (error) {
+    if (error instanceof RocketLeagueApiError) {
+      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
  * Valorant lookup - still a placeholder. Waiting on a production Riot key
  * with Valorant match/rank access before this pulls real data.
  */
@@ -228,56 +321,99 @@ async function handleNotYetSupported(interaction, gameKey, username) {
   await interaction.editReply({ embeds: [embed] });
 }
 
+const REGION_CHOICES = [
+  { name: 'North America', value: 'na' },
+  { name: 'EU West', value: 'euw' },
+  { name: 'EU Nordic & East', value: 'eune' },
+  { name: 'Korea', value: 'kr' },
+  { name: 'Oceania', value: 'oce' },
+];
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('lookup')
     .setDescription("Look up a player's stats for a specific game.")
-    .addStringOption((option) =>
-      option
-        .setName('game')
-        .setDescription('Which game to look up')
-        .setRequired(true)
-        .addChoices(
-          { name: 'League of Legends', value: 'league' },
-          { name: 'Valorant', value: 'valorant' },
-          { name: 'Overwatch 2', value: 'overwatch' },
-          { name: 'Rocket League', value: 'rocketleague' },
-          { name: 'Marvel Rivals', value: 'marvelrivals' },
-          { name: 'Super Smash Bros. Ultimate', value: 'smash' },
+    .addSubcommand((sub) =>
+      sub
+        .setName('league')
+        .setDescription("Look up a player's League of Legends stats.")
+        .addStringOption((option) =>
+          option.setName('username').setDescription('Riot ID, e.g. Name#TAG').setRequired(true)
+        )
+        .addStringOption((option) =>
+          option.setName('region').setDescription('Server region (defaults to NA)').addChoices(...REGION_CHOICES)
         )
     )
-    .addStringOption((option) =>
-      option
-        .setName('username')
-        .setDescription('Player identifier - format depends on the game (e.g. Name#TAG for Riot games)')
-        .setRequired(true)
+    .addSubcommand((sub) =>
+      sub
+        .setName('valorant')
+        .setDescription("Look up a player's Valorant stats.")
+        .addStringOption((option) =>
+          option.setName('username').setDescription('Riot ID, e.g. Name#TAG').setRequired(true)
+        )
+        .addStringOption((option) =>
+          option.setName('region').setDescription('Server region (defaults to NA)').addChoices(...REGION_CHOICES)
+        )
     )
-    .addStringOption((option) =>
-      option
-        .setName('region')
-        .setDescription('Server region - only used for League of Legends and Valorant (defaults to NA)')
-        .addChoices(
-          { name: 'North America', value: 'na' },
-          { name: 'EU West', value: 'euw' },
-          { name: 'EU Nordic & East', value: 'eune' },
-          { name: 'Korea', value: 'kr' },
-          { name: 'Oceania', value: 'oce' },
+    .addSubcommand((sub) =>
+      sub
+        .setName('rocketleague')
+        .setDescription("Look up a player's Rocket League stats.")
+        .addStringOption((option) =>
+          option.setName('username').setDescription('Player username').setRequired(true)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('platform')
+            .setDescription('Platform (defaults to Epic Games)')
+            .addChoices(
+              { name: 'Epic Games', value: 'epic' },
+              { name: 'Steam', value: 'steam' },
+              { name: 'Xbox', value: 'xbl' },
+              { name: 'PlayStation', value: 'psn' },
+            )
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('overwatch')
+        .setDescription("Look up a player's Overwatch 2 stats.")
+        .addStringOption((option) =>
+          option.setName('username').setDescription('Player username').setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('marvelrivals')
+        .setDescription("Look up a player's Marvel Rivals stats.")
+        .addStringOption((option) =>
+          option.setName('username').setDescription('Player username').setRequired(true)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('smash')
+        .setDescription("Look up a player's Super Smash Bros. Ultimate stats.")
+        .addStringOption((option) =>
+          option.setName('username').setDescription('Player username').setRequired(true)
         )
     ),
 
   async execute(interaction) {
-    const gameKey = interaction.options.getString('game');
+    const gameKey = interaction.options.getSubcommand();
     const username = interaction.options.getString('username');
-    const regionKey = interaction.options.getString('region') || 'na';
 
     await interaction.deferReply();
 
     switch (gameKey) {
       case 'league':
-        await handleLeagueLookup(interaction, username, regionKey);
+        await handleLeagueLookup(interaction, username, interaction.options.getString('region') || 'na');
         break;
       case 'valorant':
         await handleValorantLookup(interaction, username);
+        break;
+      case 'rocketleague':
+        await handleRocketLeagueLookup(interaction, username, interaction.options.getString('platform') || 'epic');
         break;
       default:
         await handleNotYetSupported(interaction, gameKey, username);
