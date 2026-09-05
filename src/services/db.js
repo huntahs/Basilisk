@@ -19,13 +19,17 @@ const dataFile = path.join(dataDir, 'basilisk.json');
 
 function loadData() {
   if (!fs.existsSync(dataFile)) {
-    return { voiceHubs: [], tempChannels: [] };
+    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [] };
   }
   try {
-    return JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+    // Backfill in case this file was written before these fields existed.
+    if (!data.pokemonChannels) data.pokemonChannels = [];
+    if (!data.pokemonRounds) data.pokemonRounds = [];
+    return data;
   } catch (error) {
     console.error('Error reading basilisk.json, starting fresh:', error);
-    return { voiceHubs: [], tempChannels: [] };
+    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [] };
   }
 }
 
@@ -70,6 +74,68 @@ function removeTempChannel(channelId) {
   saveData(data);
 }
 
+function setPokemonChannel(guildId, channelId) {
+  const data = loadData();
+  const existing = data.pokemonChannels.find((g) => g.guildId === guildId);
+  if (existing) {
+    existing.channelId = channelId;
+  } else {
+    data.pokemonChannels.push({ guildId, channelId });
+  }
+  saveData(data);
+}
+
+function getPokemonChannel(guildId) {
+  const data = loadData();
+  return data.pokemonChannels.find((g) => g.guildId === guildId)?.channelId || null;
+}
+
+function getAllPokemonChannels() {
+  const data = loadData();
+  return data.pokemonChannels; // [{ guildId, channelId }, ...]
+}
+
+/**
+ * Tracks the currently active "Who's That Pokemon?" round for a guild -
+ * one round at a time per guild. `answer` is stored lowercase for
+ * case-insensitive matching against incoming messages. `creditedUserIds`
+ * tracks who has already been given credit THIS round, so someone
+ * discussing the answer after guessing correctly doesn't get their
+ * follow-up messages deleted too. This always resets to [] whenever a new
+ * round starts (i.e. once a day), which is what gives the "resets after 24
+ * hours" behavior without needing a separate timer.
+ */
+function setPokemonRound(guildId, { channelId, messageId, answer }) {
+  const data = loadData();
+  const existing = data.pokemonRounds.find((r) => r.guildId === guildId);
+  const round = { guildId, channelId, messageId, answer: answer.toLowerCase(), creditedUserIds: [] };
+  if (existing) {
+    Object.assign(existing, round);
+  } else {
+    data.pokemonRounds.push(round);
+  }
+  saveData(data);
+}
+
+function getPokemonRound(guildId) {
+  const data = loadData();
+  return data.pokemonRounds.find((r) => r.guildId === guildId) || null;
+}
+
+function hasPokemonUserBeenCredited(guildId, userId) {
+  const round = getPokemonRound(guildId);
+  return !!round?.creditedUserIds.includes(userId);
+}
+
+function addPokemonCreditedUser(guildId, userId) {
+  const data = loadData();
+  const existing = data.pokemonRounds.find((r) => r.guildId === guildId);
+  if (existing && !existing.creditedUserIds.includes(userId)) {
+    existing.creditedUserIds.push(userId);
+    saveData(data);
+  }
+}
+
 module.exports = {
   addVoiceHub,
   removeVoiceHub,
@@ -77,4 +143,11 @@ module.exports = {
   addTempChannel,
   isTempChannel,
   removeTempChannel,
+  setPokemonChannel,
+  getPokemonChannel,
+  getAllPokemonChannels,
+  setPokemonRound,
+  getPokemonRound,
+  hasPokemonUserBeenCredited,
+  addPokemonCreditedUser,
 };

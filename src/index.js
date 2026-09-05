@@ -8,6 +8,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildVoiceStates, // needed for temp voice channels later
     GatewayIntentBits.GuildMembers,     // useful for leaderboards / role-based features
+    GatewayIntentBits.GuildMessages,    // needed to receive messages at all (Pokemon guessing)
+    GatewayIntentBits.MessageContent,   // needed to read message text (Pokemon guessing) - privileged intent, must be enabled in Developer Portal too
   ],
   partials: [Partials.Channel],
 });
@@ -15,8 +17,12 @@ const client = new Client({
 // ---- Command loading ----
 // Every file in src/commands/<category>/*.js must export { data, execute }.
 // Drop a new file in there and it's automatically picked up - no other
-// code needs to change to add a new slash command.
+// code needs to change to add a new slash command. Commands can also
+// optionally export { componentId, handleComponent } to handle a button (or
+// other message component) they attach to their own replies - those get
+// wired into client.componentHandlers below, keyed by componentId.
 client.commands = new Collection();
+client.componentHandlers = new Collection();
 
 const commandsPath = path.join(__dirname, 'commands');
 const categories = fs.readdirSync(commandsPath, { withFileTypes: true })
@@ -35,6 +41,10 @@ for (const category of categories) {
       client.commands.set(command.data.name, command);
     } else {
       console.warn(`[WARNING] Command at ${filePath} is missing "data" or "execute".`);
+    }
+
+    if ('componentId' in command && 'handleComponent' in command) {
+      client.componentHandlers.set(command.componentId, command.handleComponent);
     }
   }
 }
