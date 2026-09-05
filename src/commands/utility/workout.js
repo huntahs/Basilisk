@@ -37,6 +37,8 @@ async function handleRecord(interaction) {
     return;
   }
 
+  await interaction.deferReply(); // fetching/re-attaching the video can take a moment - avoid Discord's 3s reply timeout
+
   const liftLabel = LIFT_LABELS[lift];
   const embed = baseEmbed({
     title: `🏋️ New ${liftLabel} Submission`,
@@ -44,7 +46,7 @@ async function handleRecord(interaction) {
     footer: 'Workout Leaderboard',
   });
 
-  await interaction.reply({ embeds: [embed], files: [video.url] });
+  await interaction.editReply({ embeds: [embed], files: [video.url] });
   const sentMessage = await interaction.fetchReply();
 
   addWorkoutRecord(interaction.guild.id, {
