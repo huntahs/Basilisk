@@ -1,57 +1,73 @@
-// Local SQLite database - persists across bot restarts so we don't lose
+// Local JSON-file storage - persists across bot restarts so we don't lose
 // track of which channels are "Join to Create" hubs, or which channels are
 // bot-created temp voice channels, if Wispbyte restarts the process.
+//
+// This is intentionally NOT a real database (no better-sqlite3, no native
+// dependencies) - our storage needs are tiny (a handful of hub/channel IDs
+// at any given time), and native modules like better-sqlite3 require a
+// prebuilt binary matching the exact Node version/platform. Wispbyte runs a
+// non-LTS Node version (19.x) with no matching prebuild and no compiler
+// available to build one from source, so a plain JSON file sidesteps that
+// whole problem entirely.
 
-const path = require('node:path');
 const fs = require('node:fs');
-const Database = require('better-sqlite3');
+const path = require('node:path');
 
 const dataDir = path.join(__dirname, '..', '..', 'data');
 fs.mkdirSync(dataDir, { recursive: true });
+const dataFile = path.join(dataDir, 'basilisk.json');
 
-const db = new Database(path.join(dataDir, 'basilisk.sqlite'));
-db.pragma('journal_mode = WAL');
+function loadData() {
+  if (!fs.existsSync(dataFile)) {
+    return { voiceHubs: [], tempChannels: [] };
+  }
+  try {
+    return JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+  } catch (error) {
+    console.error('Error reading basilisk.json, starting fresh:', error);
+    return { voiceHubs: [], tempChannels: [] };
+  }
+}
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS voice_hubs (
-    guild_id TEXT NOT NULL,
-    hub_channel_id TEXT NOT NULL,
-    PRIMARY KEY (guild_id, hub_channel_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS temp_voice_channels (
-    channel_id TEXT PRIMARY KEY,
-    guild_id TEXT NOT NULL,
-    hub_channel_id TEXT NOT NULL,
-    owner_id TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-`);
+function saveData(data) {
+  fs.writeFileSync(dataFile, JSON.stringify(data, null, 2));
+}
 
 function addVoiceHub(guildId, hubChannelId) {
-  db.prepare('INSERT OR IGNORE INTO voice_hubs (guild_id, hub_channel_id) VALUES (?, ?)').run(guildId, hubChannelId);
+  const data = loadData();
+  const exists = data.voiceHubs.some((h) => h.guildId === guildId && h.hubChannelId === hubChannelId);
+  if (!exists) {
+    data.voiceHubs.push({ guildId, hubChannelId });
+    saveData(data);
+  }
 }
 
 function removeVoiceHub(guildId, hubChannelId) {
-  db.prepare('DELETE FROM voice_hubs WHERE guild_id = ? AND hub_channel_id = ?').run(guildId, hubChannelId);
+  const data = loadData();
+  data.voiceHubs = data.voiceHubs.filter((h) => !(h.guildId === guildId && h.hubChannelId === hubChannelId));
+  saveData(data);
 }
 
 function isHubChannel(channelId) {
-  return !!db.prepare('SELECT 1 FROM voice_hubs WHERE hub_channel_id = ?').get(channelId);
+  const data = loadData();
+  return data.voiceHubs.some((h) => h.hubChannelId === channelId);
 }
 
 function addTempChannel(channelId, guildId, hubChannelId, ownerId) {
-  db.prepare(
-    'INSERT INTO temp_voice_channels (channel_id, guild_id, hub_channel_id, owner_id, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).run(channelId, guildId, hubChannelId, ownerId, Date.now());
+  const data = loadData();
+  data.tempChannels.push({ channelId, guildId, hubChannelId, ownerId, createdAt: Date.now() });
+  saveData(data);
 }
 
 function isTempChannel(channelId) {
-  return !!db.prepare('SELECT 1 FROM temp_voice_channels WHERE channel_id = ?').get(channelId);
+  const data = loadData();
+  return data.tempChannels.some((c) => c.channelId === channelId);
 }
 
 function removeTempChannel(channelId) {
-  db.prepare('DELETE FROM temp_voice_channels WHERE channel_id = ?').run(channelId);
+  const data = loadData();
+  data.tempChannels = data.tempChannels.filter((c) => c.channelId !== channelId);
+  saveData(data);
 }
 
 module.exports = {
