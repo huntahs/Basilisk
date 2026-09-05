@@ -44,7 +44,7 @@ async function runMultiEmbedTeamLookup(interaction, { inputs, lookupFn, buildEmb
   const results = [];
   for (const input of inputs) {
     results.push(await lookupFn(input));
-    await delay(2000); // increased after hitting rate limits even at 500ms - being conservative since we don't have full visibility into Riot's exact per-method limits
+    await delay(3000); // increased again after still hitting rate limits at 2000ms - being extra conservative given uncertain per-method limits across multiple APIs
   }
 
   if (sortFn) results.sort(sortFn);
@@ -118,7 +118,7 @@ async function lookupOneLeaguePlayer(riotIdInput, regionKey) {
     };
   } catch (error) {
     console.error(`Error looking up ${riotIdInput} for /teamlookup league:`, error);
-    return { riotId: riotIdInput, error: "Couldn't load this player's data." };
+    return { riotId: riotIdInput, error: `Couldn't load this player's data: ${error.message}` };
   }
 }
 
@@ -137,7 +137,7 @@ async function handleLeagueTeamLookup(interaction) {
   const results = [];
   for (const riotId of riotIds) {
     results.push(await lookupOneLeaguePlayer(riotId, regionKey));
-    await delay(2000); // increased after hitting rate limits even at 500ms - being conservative since we don't have full visibility into Riot's exact per-method limits
+    await delay(3000); // increased again after still hitting rate limits at 2000ms - being extra conservative given uncertain per-method limits across multiple APIs
   }
   results.sort((a, b) => laneSortIndex(a.lane) - laneSortIndex(b.lane));
 
@@ -219,7 +219,9 @@ async function lookupOneValorantPlayer(riotIdInput) {
   try {
     const account = await getAccount(name, tag);
     const region = account.region;
+    await delay(400); // small gap between this player's own sequential HenrikDev calls - being conservative after seeing rate limits even with spacing between players
     const mmr = await getMMR(region, name, tag);
+    await delay(400);
     const matches = await getRecentCompetitiveMatches(region, name, tag);
     const roleMap = await getAgentRoleMap();
     const analysis = analyzeCompetitiveMatches(matches, account.puuid, roleMap);
@@ -227,7 +229,7 @@ async function lookupOneValorantPlayer(riotIdInput) {
     const topAgent = analysis.topAgents?.[0] || null;
 
     return {
-      riotId: `${account.gameName}#${account.tagLine}`,
+      riotId: `${account.name}#${account.tag}`,
       role: primaryRole,
       rankText: mmr.current_data?.currenttierpatched || 'Unranked',
       winRateText: analysis.gamesAnalyzed > 0 ? `${analysis.winRatePct}% (${analysis.wins}W ${analysis.losses}L)` : 'N/A',
@@ -236,7 +238,7 @@ async function lookupOneValorantPlayer(riotIdInput) {
     };
   } catch (error) {
     console.error(`Error looking up ${riotIdInput} for /teamlookup valorant:`, error);
-    return { riotId: riotIdInput, error: "Couldn't load this player's data.", role: null };
+    return { riotId: riotIdInput, error: `Couldn't load this player's data: ${error.message}`, role: null };
   }
 }
 
@@ -311,7 +313,7 @@ async function lookupOneOverwatchPlayer(rawUsername) {
     };
   } catch (error) {
     console.error(`Error looking up ${rawUsername} for /teamlookup overwatch:`, error);
-    return { username: rawUsername, error: "Couldn't load this player's data.", role: null };
+    return { username: rawUsername, error: `Couldn't load this player's data: ${error.message}`, role: null };
   }
 }
 
@@ -364,7 +366,7 @@ async function lookupOneRocketLeaguePlayer(username, platformKey) {
     };
   } catch (error) {
     console.error(`Error looking up ${username} for /teamlookup rocketleague:`, error);
-    return { username, error: "Couldn't load this player's data.", sortRating: -1 };
+    return { username, error: `Couldn't load this player's data: ${error.message}`, sortRating: -1 };
   }
 }
 
@@ -417,7 +419,7 @@ async function lookupOneSmashPlayer(slug) {
     };
   } catch (error) {
     console.error(`Error looking up ${slug} for /teamlookup smash:`, error);
-    return { displayName: slug, error: "Couldn't load this player's data." };
+    return { displayName: slug, error: `Couldn't load this player's data: ${error.message}` };
   }
 }
 
