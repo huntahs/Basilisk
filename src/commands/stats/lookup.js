@@ -7,6 +7,7 @@ const { buildChartUrl } = require('../../services/quickchart');
 const { getAccount, getMMR, getRecentCompetitiveMatches, analyzeCompetitiveMatches, HenrikApiError } = require('../../services/henrikValorant');
 const { getAgentRoleMap } = require('../../services/valorantContent');
 const { getPlayerSummary, getPlayerStatsSummary, getHeroRoleMap, pickDominantPlatform, groupHeroesByRole, findMostPlayedRole, formatPlaytime, ROLE_KEYS, OverfastApiError } = require('../../services/overfast');
+const { getSmashPlayerData, StartggApiError } = require('../../services/startgg');
 
 const QUEUE_LABELS = {
   RANKED_SOLO_5x5: 'Ranked Solo/Duo',
@@ -447,7 +448,13 @@ async function handleValorantLookup(interaction, username) {
  */
 const OW_ROLE_DISPLAY_NAMES = { tank: 'Tank', damage: 'DPS', support: 'Support' };
 
-async function handleOverwatchLookup(interaction, username) {
+async function handleOverwatchLookup(interaction, rawUsername) {
+  // Accept either "Name#1234" or "Name-1234" - OverFast's own convention is
+  // dash-separated, but "#" is what people are used to typing everywhere
+  // else (League, Valorant), so normalize it here rather than making users
+  // remember a different format just for this one game.
+  const username = rawUsername.replace('#', '-');
+
   try {
     const summary = await getPlayerSummary(username);
 
@@ -542,6 +549,138 @@ async function handleOverwatchLookup(interaction, username) {
 }
 
 /**
+ * Super Smash Bros. Ultimate lookup - real data via start.gg's GraphQL API.
+ *
+ * IMPORTANT UX NOTE: `username` here must be the person's start.gg profile
+ * SLUG (the opaque ID from their profile URL, e.g. start.gg/user/d3106f2f
+ * -> "d3106f2f"), NOT their gamerTag. start.gg's public API has no way to
+ * look someone up by gamerTag directly - this is a real limitation unique
+ * to this integration, unlike every other game we support.
+ */
+async function handleSmashLookup(interaction, username) {
+  try {
+    const data = await getSmashPlayerData(username);
+    const displayName = data.prefix ? `${data.prefix} | ${data.gamerTag}` : data.gamerTag;
+
+    const embed = baseEmbed({
+      title: `Super Smash Bros. Ultimate — ${displayName}`,
+      footer: 'Data via start.gg',
+    });
+
+    if (data.avatarUrl) {
+      embed.setThumbnail(data.avatarUrl);
+    }
+
+    if (data.ranking) {
+      embed.addFields({
+        name: '🏅 start.gg Ranking',
+        value: `#${data.ranking.rank} — ${data.ranking.title}`,
+      });
+    }
+
+    // --- Win rates ---
+    const allTime = data.allTimeRecord;
+    const sixMonth = data.sixMonthRecord;
+
+    embed.addFields({
+      name: '📊 All-Time Win Rate',
+      value: allTime.total > 0
+        ? `${allTime.winRatePct}% (${allTime.wins}W ${allTime.losses}L across ${allTime.total} sets)`
+        : 'No recorded sets found.',
+    });
+
+    embed.addFields({
+      name: '📈 Last 6 Months Win Rate',
+      value: sixMonth.total > 0
+        ? `${sixMonth.winRatePct}% (${sixMonth.wins}W ${sixMonth.losses}L across ${sixMonth.total} sets)`
+        : 'No sets in the last 6 months.',
+      inline: false,
+    });
+
+    // --- Most played character (headline) + top 3 with playrate/W-L ---
+    if (data.topCharacters.length > 0) {
+      const top = data.topCharacters[0];
+      embed.addFields({
+        name: '🎮 Most Played Character (last year)',
+        value: `**${top.name}** — ${top.playratePct}% playrate, ${top.winRatePct}% win rate`,
+      });
+
+      if (top.iconUrl) {
+        embed.setImage(top.iconUrl);
+      }
+
+      const characterLines = data.topCharacters.map(
+        (c) => `**${c.name}** — ${c.playratePct}% playrate • ${c.winRatePct}% WR (${c.wins}W ${c.losses}L)`
+      );
+      embed.addFields({
+        name: '⚔️ Top 3 Characters (last year)',
+        value: characterLines.join('\n'),
+      });
+    } else {
+      embed.addFields({
+        name: '🎮 Most Played Character',
+        value: 'No character selection data found for the last year.',
+      });
+    }
+
+    // --- Most played stages (graceful fallback - often unavailable) ---
+    if (data.topStages.length > 0) {
+      embed.addFields({
+        name: '🗺️ Most Played Stages (last year)',
+        value: data.topStages.map((s) => `**${s.name}** — ${s.count} games`).join('\n'),
+      });
+    } else {
+      embed.addFields({
+        name: '🗺️ Most Played Stages',
+        value: 'No stage data available - not all tournaments report this.',
+      });
+    }
+
+    // --- Recent tournament placements ---
+    if (data.recentStandings.length > 0) {
+      const lines = data.recentStandings.slice(0, 5).map((s) => {
+        const eventName = s.entrant?.event?.name || 'Unknown Event';
+        const tournamentName = s.entrant?.event?.tournament?.name || 'Unknown Tournament';
+        return `**${s.placement}${ordinalSuffix(s.placement)}** — ${eventName} @ ${tournamentName}`;
+      });
+      embed.addFields({
+        name: '🏆 Recent Tournament Placements',
+        value: lines.join('\n'),
+      });
+    }
+
+    // --- Profile links ---
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🔗 start.gg Profile ↗')
+        .setStyle(ButtonStyle.Link)
+        .setURL(data.startggProfileUrl),
+      new ButtonBuilder()
+        .setLabel('🔗 Supermajor.gg ↗')
+        .setStyle(ButtonStyle.Link)
+        .setURL(data.supermajorUrl)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+  } catch (error) {
+    if (error instanceof StartggApiError) {
+      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      return;
+    }
+    throw error;
+  }
+}
+
+function ordinalSuffix(n) {
+  const j = n % 10;
+  const k = n % 100;
+  if (j === 1 && k !== 11) return 'st';
+  if (j === 2 && k !== 12) return 'nd';
+  if (j === 3 && k !== 13) return 'rd';
+  return 'th';
+}
+
+/**
  * Placeholder for games without a working data source yet.
  */
 async function handleNotYetSupported(interaction, gameKey, username) {
@@ -616,7 +755,7 @@ module.exports = {
         .addStringOption((option) =>
           option
             .setName('username')
-            .setDescription('BattleTag with # replaced by - (e.g. Name-1234)')
+            .setDescription('BattleTag, e.g. Name#1234 or Name-1234')
             .setRequired(true)
         )
     )
@@ -633,7 +772,10 @@ module.exports = {
         .setName('smash')
         .setDescription("Look up a player's Super Smash Bros. Ultimate stats.")
         .addStringOption((option) =>
-          option.setName('username').setDescription('Player username').setRequired(true)
+          option
+            .setName('username')
+            .setDescription('start.gg profile slug from their profile URL (e.g. start.gg/user/d3106f2f -> d3106f2f)')
+            .setRequired(true)
         )
     ),
 
@@ -655,6 +797,9 @@ module.exports = {
         break;
       case 'overwatch':
         await handleOverwatchLookup(interaction, username);
+        break;
+      case 'smash':
+        await handleSmashLookup(interaction, username);
         break;
       default:
         await handleNotYetSupported(interaction, gameKey, username);
