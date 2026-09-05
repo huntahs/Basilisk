@@ -1,5 +1,5 @@
 const cron = require('node-cron');
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle, ActivityType } = require('discord.js');
+const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { baseEmbed } = require('./embeds');
 const { getRecentMedia, refreshAccessToken } = require('./instagram');
 const {
@@ -7,9 +7,8 @@ const {
   updateInstagramLastSeenMediaId,
   updateInstagramToken,
   setTemporaryBotStatus,
-  getTemporaryBotStatus,
-  clearTemporaryBotStatus,
 } = require('./db');
+const { applyCurrentActivity } = require('./statusScheduler');
 
 // Refresh well before the real 60-day expiry, so there's a comfortable
 // safety margin even if a scheduled run gets missed once or twice.
@@ -50,33 +49,17 @@ function buildAnnouncementEmbedAndRow(media) {
 }
 
 /**
- * Sets a temporary "New Post!" bot status for 24 hours, persisting the
- * expiry so it survives a restart mid-window. Discord bots can't use a
- * fully custom no-verb status (that's a personal-account-only feature) -
- * this uses the "Watching" activity type, so it displays as
- * "Watching New Post on Our Instagram! :D".
- */
-function setNewPostStatus(client) {
-  client.user.setActivity('New Post on Our Instagram! :D', { type: ActivityType.Watching });
-  setTemporaryBotStatus(Date.now() + STATUS_DURATION_MS);
-}
-
-function clearNewPostStatusIfExpired(client) {
-  const status = getTemporaryBotStatus();
-  if (!status) return;
-
-  if (Date.now() >= status.expiresAt) {
-    client.user.setActivity(null);
-    clearTemporaryBotStatus();
-  }
-}
-
-/**
  * Checks one guild's configured Instagram account for a new post. On the
  * very first check (lastSeenMediaId is null), this silently records the
  * current newest post as the baseline WITHOUT announcing it - otherwise
  * setting this up for the first time would immediately blast out an
  * announcement for a post that's potentially already old news.
+ *
+ * NOTE: this only RECORDS that a new post was found (via
+ * setTemporaryBotStatus) - it does not touch client.user.setActivity()
+ * directly. The unified status scheduler (statusScheduler.js) is the only
+ * code that sets the bot's actual presence, checking this flag as its
+ * top-priority rule each time it runs.
  */
 async function checkForNewPost(client, config) {
   const media = await getRecentMedia(config.accessToken, 1);
@@ -99,7 +82,9 @@ async function checkForNewPost(client, config) {
   const { embed, row } = buildAnnouncementEmbedAndRow(newest);
   await channel.send({ content: '@everyone', embeds: [embed], components: [row] });
 
-  setNewPostStatus(client);
+  setTemporaryBotStatus(Date.now() + STATUS_DURATION_MS);
+  applyCurrentActivity(client); // reflect the new status immediately, don't wait for the next 15-min tick
+
   updateInstagramLastSeenMediaId(config.guildId, newest.id);
 }
 
@@ -112,7 +97,6 @@ async function checkAllGuildsForNewPosts(client) {
       console.error(`Error checking Instagram for guild ${config.guildId}:`, error);
     }
   }
-  clearNewPostStatusIfExpired(client);
 }
 
 async function refreshTokensIfDue() {
@@ -135,20 +119,7 @@ async function refreshTokensIfDue() {
 }
 
 function initInstagramJob(client) {
-  // Resume/resolve any in-progress temporary status immediately on startup,
-  // in case the bot restarted partway through a 24-hour window.
-  const status = getTemporaryBotStatus();
-  if (status) {
-    if (Date.now() >= status.expiresAt) {
-      client.user.setActivity(null);
-      clearTemporaryBotStatus();
-    } else {
-      client.user.setActivity('New Post on Our Instagram! :D', { type: ActivityType.Watching });
-    }
-  }
-
-  // Check for new posts every 30 minutes (this also checks/reverts the
-  // temporary status once it expires, piggybacking on the same interval).
+  // Check for new posts every 30 minutes.
   cron.schedule('*/30 * * * *', () => {
     checkAllGuildsForNewPosts(client);
   });
