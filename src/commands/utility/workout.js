@@ -1,17 +1,6 @@
-const {
-  SlashCommandBuilder,
-  ChannelType,
-  PermissionFlagsBits,
-  MessageFlags,
-} = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { baseEmbed } = require('../../services/embeds');
-const {
-  addWorkoutRecord,
-  removeWorkoutRecordByMessageId,
-  getWorkoutLeaderboard,
-  logWorkout,
-  setWorkoutChannel,
-} = require('../../services/db');
+const { addWorkoutRecord, getWorkoutLeaderboard, logWorkout } = require('../../services/db');
 const { getChicagoDateStr } = require('../../services/dateUtils');
 
 const LIFT_LABELS = { squat: 'Squat', bench: 'Bench Press', deadlift: 'Deadlift' };
@@ -21,10 +10,6 @@ const LIFT_CHOICES = [
   { name: 'Deadlift', value: 'deadlift' },
 ];
 const MEDALS = ['🥇', '🥈', '🥉'];
-
-function hasPermission(interaction, permission) {
-  return interaction.member?.permissions?.has(permission);
-}
 
 async function handleRecord(interaction) {
   const lift = interaction.options.getString('lift');
@@ -99,44 +84,6 @@ async function handleLog(interaction) {
   await interaction.reply(`✅ Workout logged for today! Current streak: 🔥 ${result.streak} day(s).`);
 }
 
-async function handleNix(interaction) {
-  if (!hasPermission(interaction, PermissionFlagsBits.ManageMessages)) {
-    await interaction.reply({
-      content: 'You need the Manage Messages permission to use this.',
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  const messageId = interaction.options.getString('message-id');
-  const removed = removeWorkoutRecordByMessageId(messageId);
-
-  await interaction.reply({
-    content: removed
-      ? `Removed the submission for message ID \`${messageId}\` from the leaderboard.`
-      : `No tracked submission found with message ID \`${messageId}\`.`,
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
-async function handleSetup(interaction) {
-  if (!hasPermission(interaction, PermissionFlagsBits.ManageChannels)) {
-    await interaction.reply({
-      content: 'You need the Manage Channels permission to use this.',
-      flags: MessageFlags.Ephemeral,
-    });
-    return;
-  }
-
-  const channel = interaction.options.getChannel('channel');
-  setWorkoutChannel(interaction.guild.id, channel.id);
-
-  await interaction.reply({
-    content: `Done! The 9 PM Central workout progress check will post in ${channel}.`,
-    flags: MessageFlags.Ephemeral,
-  });
-}
-
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('workout')
@@ -165,20 +112,6 @@ module.exports = {
       sub
         .setName('log')
         .setDescription('Log that you worked out today - no proof needed, one log per calendar day.')
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('nix')
-        .setDescription('[Manage Messages] Remove a submission from the leaderboard by message ID.')
-        .addStringOption((o) => o.setName('message-id').setDescription('Message ID of the submission to remove').setRequired(true))
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName('setup')
-        .setDescription('[Manage Channels] Set the channel for the 9 PM daily progress check.')
-        .addChannelOption((o) =>
-          o.setName('channel').setDescription('Channel for the progress check').addChannelTypes(ChannelType.GuildText).setRequired(true)
-        )
     ),
 
   async execute(interaction) {
@@ -198,12 +131,6 @@ module.exports = {
         break;
       case 'log':
         await handleLog(interaction);
-        break;
-      case 'nix':
-        await handleNix(interaction);
-        break;
-      case 'setup':
-        await handleSetup(interaction);
         break;
     }
   },
