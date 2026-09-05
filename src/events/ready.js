@@ -1,5 +1,6 @@
 const { Events } = require('discord.js');
 const { initPokemonGameJob } = require('../services/pokemonGameJob');
+const { initInstagramJob } = require('../services/instagramJob');
 
 module.exports = {
   name: Events.ClientReady,
@@ -7,5 +8,6 @@ module.exports = {
   execute(client) {
     console.log(`Basilisk is online as ${client.user.tag}. Serving ${client.guilds.cache.size} guild(s).`);
     initPokemonGameJob(client);
+    initInstagramJob(client);
   },
 };

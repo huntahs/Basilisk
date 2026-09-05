@@ -19,17 +19,19 @@ const dataFile = path.join(dataDir, 'basilisk.json');
 
 function loadData() {
   if (!fs.existsSync(dataFile)) {
-    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [] };
+    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [], instagramConfigs: [], botStatus: null };
   }
   try {
     const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     // Backfill in case this file was written before these fields existed.
     if (!data.pokemonChannels) data.pokemonChannels = [];
     if (!data.pokemonRounds) data.pokemonRounds = [];
+    if (!data.instagramConfigs) data.instagramConfigs = [];
+    if (data.botStatus === undefined) data.botStatus = null;
     return data;
   } catch (error) {
     console.error('Error reading basilisk.json, starting fresh:', error);
-    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [] };
+    return { voiceHubs: [], tempChannels: [], pokemonChannels: [], pokemonRounds: [], instagramConfigs: [], botStatus: null };
   }
 }
 
@@ -136,6 +138,90 @@ function addPokemonCreditedUser(guildId, userId) {
   }
 }
 
+/**
+ * Instagram announcement config, one per guild:
+ *   - channelId: where to post new-post announcements
+ *   - accessToken: current long-lived Instagram Graph API token (mutable -
+ *     gets overwritten in place whenever the refresh job successfully
+ *     refreshes it, so this is always the CURRENT valid token, not the
+ *     original one from initial setup)
+ *   - tokenRefreshedAt: timestamp (ms) of the last successful refresh, used
+ *     to decide when the next refresh is due (tokens are valid 60 days)
+ *   - lastSeenMediaId: the most recent Instagram post ID we've already
+ *     either announced or deliberately skipped (on first setup) - prevents
+ *     re-announcing the same post or dumping the whole history on setup
+ */
+function setInstagramConfig(guildId, { channelId, accessToken, lastSeenMediaId }) {
+  const data = loadData();
+  const existing = data.instagramConfigs.find((c) => c.guildId === guildId);
+  const config = {
+    guildId,
+    channelId,
+    accessToken,
+    tokenRefreshedAt: Date.now(),
+    lastSeenMediaId: lastSeenMediaId || null,
+  };
+  if (existing) {
+    Object.assign(existing, config);
+  } else {
+    data.instagramConfigs.push(config);
+  }
+  saveData(data);
+}
+
+function getInstagramConfig(guildId) {
+  const data = loadData();
+  return data.instagramConfigs.find((c) => c.guildId === guildId) || null;
+}
+
+function getAllInstagramConfigs() {
+  const data = loadData();
+  return data.instagramConfigs;
+}
+
+function updateInstagramLastSeenMediaId(guildId, mediaId) {
+  const data = loadData();
+  const existing = data.instagramConfigs.find((c) => c.guildId === guildId);
+  if (existing) {
+    existing.lastSeenMediaId = mediaId;
+    saveData(data);
+  }
+}
+
+function updateInstagramToken(guildId, newAccessToken) {
+  const data = loadData();
+  const existing = data.instagramConfigs.find((c) => c.guildId === guildId);
+  if (existing) {
+    existing.accessToken = newAccessToken;
+    existing.tokenRefreshedAt = Date.now();
+    saveData(data);
+  }
+}
+
+/**
+ * Bot presence/activity is GLOBAL (not per-guild - a bot has one status
+ * across every server it's in), so this isn't keyed by guildId like
+ * everything else. Tracks when a temporary "New Post!" status should
+ * revert back to normal, so it survives a bot restart mid-window instead
+ * of relying on an in-memory setTimeout that would be lost on restart.
+ */
+function setTemporaryBotStatus(expiresAt) {
+  const data = loadData();
+  data.botStatus = { expiresAt };
+  saveData(data);
+}
+
+function getTemporaryBotStatus() {
+  const data = loadData();
+  return data.botStatus;
+}
+
+function clearTemporaryBotStatus() {
+  const data = loadData();
+  data.botStatus = null;
+  saveData(data);
+}
+
 module.exports = {
   addVoiceHub,
   removeVoiceHub,
@@ -150,4 +236,12 @@ module.exports = {
   getPokemonRound,
   hasPokemonUserBeenCredited,
   addPokemonCreditedUser,
+  setInstagramConfig,
+  getInstagramConfig,
+  getAllInstagramConfigs,
+  updateInstagramLastSeenMediaId,
+  updateInstagramToken,
+  setTemporaryBotStatus,
+  getTemporaryBotStatus,
+  clearTemporaryBotStatus,
 };
