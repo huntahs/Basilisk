@@ -26,6 +26,10 @@ function parsePlayerList(raw) {
     .slice(0, MAX_PLAYERS);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Shared runner for the 4 non-League games: looks up each player
  * sequentially (not in parallel - intentional, keeps request pacing
@@ -40,6 +44,7 @@ async function runMultiEmbedTeamLookup(interaction, { inputs, lookupFn, buildEmb
   const results = [];
   for (const input of inputs) {
     results.push(await lookupFn(input));
+    await delay(500); // spread requests out across players, same reasoning as League's team lookup
   }
 
   if (sortFn) results.sort(sortFn);
@@ -132,6 +137,7 @@ async function handleLeagueTeamLookup(interaction) {
   const results = [];
   for (const riotId of riotIds) {
     results.push(await lookupOneLeaguePlayer(riotId, regionKey));
+    await delay(500); // spread requests out across players - each player alone is fine, but 5 back-to-back without this can trip Riot's rate limit
   }
   results.sort((a, b) => laneSortIndex(a.lane) - laneSortIndex(b.lane));
 
