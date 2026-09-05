@@ -35,7 +35,8 @@ module.exports = {
     }
 
     try {
-      await message.channel.send(`✅ <@${authorId}> got it right!`);
+      const originalPostUrl = `https://discord.com/channels/${message.guild.id}/${round.channelId}/${round.messageId}`;
+      await message.channel.send(`✅ <@${authorId}> got it right! [View the original post](${originalPostUrl})`);
     } catch (error) {
       console.error('Error sending Pokemon credit message:', error);
     }

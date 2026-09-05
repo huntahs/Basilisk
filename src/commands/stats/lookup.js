@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, MessageFlags } = require('discord.js');
 const { baseEmbed } = require('../../services/embeds');
 const { getLeagueProfile, analyzeRecentRankedSolo, getTopChampionMastery, RiotApiError } = require('../../services/riot');
 const { getChampionName, getProfileIconUrl } = require('../../services/ddragon');
@@ -8,6 +8,24 @@ const { getAccount, getMMR, getRecentCompetitiveMatches, analyzeCompetitiveMatch
 const { getAgentRoleMap } = require('../../services/valorantContent');
 const { getPlayerSummary, getPlayerStatsSummary, getHeroRoleMap, pickDominantPlatform, groupHeroesByRole, findMostPlayedRole, formatPlaytime, ROLE_KEYS, OverfastApiError } = require('../../services/overfast');
 const { getSmashPlayerData, StartggApiError } = require('../../services/startgg');
+
+/**
+ * The whole command defers non-ephemerally up front (needed since these
+ * lookups can take several seconds). That means a normal editReply() can
+ * NEVER become ephemeral after the fact - Discord decides visibility at the
+ * very first response, not per-edit. To show an error ONLY to the person
+ * who ran the command (instead of leaving a public "couldn't find them"
+ * message in the channel), we delete the public deferred placeholder and
+ * send a fresh ephemeral follow-up in its place.
+ */
+async function sendEphemeralError(interaction, message) {
+  try {
+    await interaction.deleteReply();
+  } catch (deleteError) {
+    console.error('Error deleting deferred reply before showing ephemeral error:', deleteError);
+  }
+  await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
+}
 
 const QUEUE_LABELS = {
   RANKED_SOLO_5x5: 'Ranked Solo/Duo',
@@ -76,7 +94,8 @@ function formatValorantSeason(code) {
 async function handleLeagueLookup(interaction, username, regionKey) {
   const [gameName, tagLine] = username.split('#').map((s) => s?.trim());
   if (!gameName || !tagLine) {
-    await interaction.editReply(
+    await sendEphemeralError(
+      interaction,
       'That doesn\'t look like a valid Riot ID. Use the format `Name#TAG` (e.g. `Gyroscopic#Spin`).'
     );
     return;
@@ -88,7 +107,7 @@ async function handleLeagueLookup(interaction, username, regionKey) {
     const embed = baseEmbed({
       title: `League of Legends — ${profile.riotId}`,
       description: `${profile.regionLabel} • Level ${profile.summonerLevel}`,
-      footer: 'Data via Riot Games API',
+      footer: 'Basilisk',
     });
 
     try {
@@ -198,7 +217,7 @@ async function handleLeagueLookup(interaction, username, regionKey) {
     await interaction.editReply({ embeds: [embed], components: [row] });
   } catch (error) {
     if (error instanceof RiotApiError) {
-      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      await sendEphemeralError(interaction, `Couldn't get that player's data: ${error.message}`);
       return;
     }
     throw error;
@@ -218,7 +237,7 @@ async function handleRocketLeagueLookup(interaction, username, platformKey) {
 
     const embed = baseEmbed({
       title: `Rocket League — ${data.username}`,
-      footer: 'Data via Rocket League Stats API (RapidAPI)',
+      footer: 'Basilisk',
     });
 
     const doubles = findPlaylist(data, PLAYLIST_IDS.DOUBLES_2V2);
@@ -289,7 +308,7 @@ async function handleRocketLeagueLookup(interaction, username, platformKey) {
     await interaction.editReply({ embeds: [embed], components: [row] });
   } catch (error) {
     if (error instanceof RocketLeagueApiError) {
-      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      await sendEphemeralError(interaction, `Couldn't get that player's data: ${error.message}`);
       return;
     }
     throw error;
@@ -303,7 +322,8 @@ async function handleRocketLeagueLookup(interaction, username, platformKey) {
 async function handleValorantLookup(interaction, username) {
   const [name, tag] = username.split('#').map((s) => s?.trim());
   if (!name || !tag) {
-    await interaction.editReply(
+    await sendEphemeralError(
+      interaction,
       'That doesn\'t look like a valid Riot ID. Use the format `Name#TAG` (e.g. `Gyroscopic#Spin`).'
     );
     return;
@@ -316,7 +336,7 @@ async function handleValorantLookup(interaction, username) {
     const embed = baseEmbed({
       title: `Valorant — ${account.name}#${account.tag}`,
       description: `Region: ${region.toUpperCase()} • Level ${account.account_level}`,
-      footer: 'Data via HenrikDev API',
+      footer: 'Basilisk',
     });
 
     if (account.card?.small) {
@@ -426,7 +446,7 @@ async function handleValorantLookup(interaction, username) {
     await interaction.editReply({ embeds: [embed], components: [row] });
   } catch (error) {
     if (error instanceof HenrikApiError) {
-      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      await sendEphemeralError(interaction, `Couldn't get that player's data: ${error.message}`);
       return;
     }
     throw error;
@@ -460,7 +480,7 @@ async function handleOverwatchLookup(interaction, rawUsername) {
 
     const embed = baseEmbed({
       title: `Overwatch 2 — ${summary.username}`,
-      footer: 'Data via OverFast API • All stats are lifetime/season totals, not a recent-games sample',
+      footer: 'Basilisk • All stats are lifetime/season totals, not a recent-games sample',
     });
 
     if (summary.avatar) {
@@ -541,7 +561,7 @@ async function handleOverwatchLookup(interaction, rawUsername) {
     await interaction.editReply({ embeds: [embed] });
   } catch (error) {
     if (error instanceof OverfastApiError) {
-      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      await sendEphemeralError(interaction, `Couldn't get that player's data: ${error.message}`);
       return;
     }
     throw error;
@@ -564,7 +584,7 @@ async function handleSmashLookup(interaction, username) {
 
     const embed = baseEmbed({
       title: `Super Smash Bros. Ultimate — ${displayName}`,
-      footer: 'Data via start.gg',
+      footer: 'Basilisk',
     });
 
     if (data.ranking) {
@@ -660,7 +680,7 @@ async function handleSmashLookup(interaction, username) {
     await interaction.editReply({ embeds: [embed], components: [row] });
   } catch (error) {
     if (error instanceof StartggApiError) {
-      await interaction.editReply(`Couldn't get that player's data: ${error.message}`);
+      await sendEphemeralError(interaction, `Couldn't get that player's data: ${error.message}`);
       return;
     }
     throw error;
@@ -803,3 +823,4 @@ module.exports = {
     }
   },
 };
+

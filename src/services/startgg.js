@@ -140,9 +140,9 @@ async function fetchAllLightSets(userSlug) {
  * roughly "the last year" instead of fetching someone's entire history at
  * the more expensive heavy complexity cost.
  */
-async function fetchRecentHeavySets(userSlug, sinceTimestamp) {
+async function fetchRecentHeavySets(userSlug, sinceTimestamp, maxPages = HEAVY_MAX_PAGES) {
   const allSets = [];
-  for (let page = 1; page <= HEAVY_MAX_PAGES; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const data = await gqlRequest(
       `query HeavySets($slug: String!, $page: Int!, $perPage: Int!) {
         user(slug: $slug) {
@@ -151,6 +151,7 @@ async function fetchRecentHeavySets(userSlug, sinceTimestamp) {
               pageInfo { totalPages }
               nodes {
                 id
+                winnerId
                 completedAt
                 displayScore
                 slots { entrant { id name } }
@@ -347,3 +348,50 @@ async function getSmashPlayerData(userSlug) {
 }
 
 module.exports = { StartggApiError, getSmashPlayerData, SMASH_ULTIMATE_ID };
+
+/**
+ * Lightweight version for /teamlookup - identity + last-year win/loss and
+ * top 2 characters only. Uses a much smaller page cap than the full
+ * single-player lookup (5 pages of 30 = up to 150 sets, vs. 15 pages/450
+ * for a single /lookup smash) since this runs once per player in a team of
+ * up to 5 - keeping it fast and light on start.gg's API instead of
+ * potentially hundreds of requests per player.
+ */
+const TEAM_LOOKUP_HEAVY_MAX_PAGES = 5;
+const ONE_YEAR_SECONDS_TEAM = 365 * 24 * 60 * 60;
+
+async function getSmashTeamSummary(userSlug) {
+  const identityData = await gqlRequest(
+    `query PlayerIdentity($slug: String!) {
+      user(slug: $slug) {
+        player {
+          gamerTag
+          prefix
+        }
+      }
+    }`,
+    { slug: userSlug }
+  );
+
+  const player = identityData?.user?.player;
+  if (!player) {
+    throw new StartggApiError('No player found for that profile - check the slug from their start.gg profile URL.', 404);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const heavySets = await fetchRecentHeavySets(userSlug, now - ONE_YEAR_SECONDS_TEAM, TEAM_LOOKUP_HEAVY_MAX_PAGES);
+  const ultimateSets = heavySets.filter((s) => s.event?.videogame?.id === SMASH_ULTIMATE_ID);
+
+  const winLoss = computeWinLoss(ultimateSets, player.gamerTag);
+  const topCharacters = computeCharacterStats(ultimateSets, player.gamerTag, 2);
+
+  return {
+    gamerTag: player.gamerTag,
+    prefix: player.prefix,
+    winLoss,
+    topCharacters,
+    startggProfileUrl: `https://www.start.gg/user/${encodeURIComponent(userSlug)}`,
+  };
+}
+
+module.exports.getSmashTeamSummary = getSmashTeamSummary;
