@@ -21,10 +21,18 @@ module.exports = {
           flags: MessageFlags.Ephemeral,
         };
 
-        if (interaction.replied || interaction.deferred) {
-          await interaction.followUp(errorReply);
-        } else {
-          await interaction.reply(errorReply);
+        // This fallback reply/followUp can ALSO fail (e.g. the interaction
+        // token has already expired) - wrap it so a failure here just gets
+        // logged instead of becoming an unhandled rejection that crashes
+        // the whole bot process.
+        try {
+          if (interaction.replied || interaction.deferred) {
+            await interaction.followUp(errorReply);
+          } else {
+            await interaction.reply(errorReply);
+          }
+        } catch (followUpError) {
+          console.error(`Also failed to send the error reply for "${interaction.commandName}":`, followUpError);
         }
       }
       return;

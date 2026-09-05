@@ -66,6 +66,15 @@ for (const file of eventFiles) {
 
 client.login(process.env.DISCORD_TOKEN);
 
+// Without a listener here, discord.js's own internal errors (REST failures,
+// gateway issues, etc.) emitted as a Client 'error' event will crash the
+// entire process - Node treats an EventEmitter's special 'error' event with
+// zero listeners as an uncaught exception. This is separate from the
+// unhandledRejection handler below and doesn't overlap with it.
+client.on('error', (error) => {
+  console.error('Discord client error:', error);
+});
+
 process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection:', error);
 });
